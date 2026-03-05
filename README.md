@@ -183,6 +183,10 @@ Contributions welcome. The most impactful areas:
 - **Bug reports** — especially around edge cases in session discovery and import
 - **Platform testing** — tested on Linux ↔ macOS; Windows support is untested
 
+## Credits
+
+Conceived and directed by Ljubomir Buturovic. Built with [Claude Code](https://code.claude.com).
+
 ## License
 
 MIT
