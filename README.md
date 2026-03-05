@@ -185,7 +185,7 @@ Contributions welcome. The most impactful areas:
 
 ## Credits
 
-Conceived and directed by Ljubomir Buturovic. Built with [Claude Code](https://code.claude.com).
+Conceived and directed by Ljubomir Buturovic. Built with [Claude Code](https://code.claude.com). Jokes by CC
 
 ## License
 
