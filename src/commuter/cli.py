@@ -342,17 +342,24 @@ def config_show():
 @cli.command("push")
 @click.option("-v", "--verbose", is_flag=True)
 def cmd_push(verbose):
-    """Export the latest session to the configured transfer directory."""
+    """Export the current directory's session to the configured transfer directory."""
     transfer_dir = config_mod.get_transfer_dir()
     if not transfer_dir:
         err_console.print("[red]✗ No transfer directory configured.[/red]")
         err_console.print("  Run: commuter config set transfer-dir ~/Dropbox/.commuter/")
         sys.exit(1)
 
-    info = BACKEND.latest_session()
-    if not info:
-        err_console.print("[red]No sessions found.[/red]")
+    cwd = str(Path.cwd())
+    encoded_cwd = pathmap.encode_project_path(cwd)
+    sessions = BACKEND.discover()
+    matching = [s for s in sessions if pathmap.encode_project_path(s.project_dir) == encoded_cwd]
+
+    if not matching:
+        err_console.print(f"[red]✗ No session found for current directory: {cwd}[/red]")
+        err_console.print("  Run [bold]commuter list[/bold] to see all sessions.")
         sys.exit(1)
+
+    info = matching[0]  # most recent (discover() returns sorted by last_activity)
 
     pending_dir = transfer_dir / "pending"
     pending_dir.mkdir(parents=True, exist_ok=True)
@@ -386,11 +393,10 @@ def cmd_push(verbose):
 
 
 @cli.command("pull")
-@click.option("--no-launch", is_flag=True)
-@click.option("--dry-run", is_flag=True)
+@click.option("--dry-run", is_flag=True, help="Show what would happen without making changes")
 @click.option("-v", "--verbose", is_flag=True)
-def cmd_pull(no_launch, dry_run, verbose):
-    """Import the latest session from the configured transfer directory."""
+def cmd_pull(dry_run, verbose):
+    """Import all pending sessions from the configured transfer directory."""
     transfer_dir = config_mod.get_transfer_dir()
     if not transfer_dir:
         err_console.print("[red]✗ No transfer directory configured.[/red]")
@@ -398,39 +404,49 @@ def cmd_pull(no_launch, dry_run, verbose):
         sys.exit(1)
 
     pending_dir = transfer_dir / "pending"
-    if not pending_dir.exists():
-        err_console.print(f"[red]✗ No pending sessions in {pending_dir}[/red]")
-        sys.exit(1)
+    if not pending_dir.exists() or not list(pending_dir.glob("*.json")):
+        err_console.print(f"[yellow]No pending sessions in {pending_dir}[/yellow]")
+        return
 
-    bundles = sorted(pending_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not bundles:
-        err_console.print(f"[red]✗ No bundle files found in {pending_dir}[/red]")
-        sys.exit(1)
-
-    bundle_file = bundles[0]
-    if verbose:
-        console.print(f"  Found bundle: {bundle_file.name}")
-
-    # Delegate to import logic with --replace behavior
+    bundles = sorted(pending_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)
     ctx = click.get_current_context()
-    ctx.invoke(
-        cmd_import,
-        bundle_file=str(bundle_file),
-        project_dir=None,
-        replace=True,
-        no_launch=no_launch,
-        dry_run=dry_run,
-        verbose=verbose,
-    )
+    history_dir = transfer_dir / "history"
+    imported_dirs: list[str] = []
 
-    # Move to history after successful import
-    if not dry_run:
-        history_dir = transfer_dir / "history"
-        history_dir.mkdir(parents=True, exist_ok=True)
-        dest = history_dir / bundle_file.name
-        bundle_file.rename(dest)
-        if verbose:
-            console.print(f"  [dim]Moved bundle to history: {dest}[/dim]")
+    for bundle_file in bundles:
+        if verbose or len(bundles) > 1:
+            console.rule(f"[dim]{bundle_file.stem[:7]}[/dim]")
+
+        # Peek at the bundle to get the project dir for the final summary
+        try:
+            bndl = bundle_mod.read(str(bundle_file))
+            src_dir = bndl["session"]["project_dir"]
+            local_dir = _resolve_project_dir(src_dir) or src_dir
+        except Exception:
+            local_dir = str(bundle_file.stem)
+
+        ctx.invoke(
+            cmd_import,
+            bundle_file=str(bundle_file),
+            project_dir=None,
+            replace=True,
+            no_launch=True,
+            dry_run=dry_run,
+            verbose=verbose,
+        )
+
+        if not dry_run:
+            history_dir.mkdir(parents=True, exist_ok=True)
+            bundle_file.rename(history_dir / bundle_file.name)
+
+        imported_dirs.append(local_dir)
+
+    if imported_dirs:
+        console.print()
+        n = len(imported_dirs)
+        console.print(f"  [green]✓[/green] Imported {n} session(s). To resume:")
+        for d in imported_dirs:
+            console.print(f"    cd {d} && claude --continue")
 
 
 # ---------------------------------------------------------------------------

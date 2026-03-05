@@ -103,6 +103,8 @@ If both machines use the same paths, skip this step.
 | `commuter export --latest -o file.json` | Export the most recent session |
 | `commuter import file.json` | Import a session and launch Claude Code |
 | `commuter config set path-map "A" "B"` | Set up path translation between machines |
+| `commuter push` | Export current directory's session to transfer dir |
+| `commuter pull` | Import all pending sessions from transfer dir |
 
 ### Import flags
 
@@ -115,14 +117,32 @@ If both machines use the same paths, skip this step.
 
 ### Push / pull shortcut
 
-For an even faster workflow, configure a shared transfer directory:
+For an even faster workflow, configure a shared transfer directory once:
 
 ```bash
 commuter config set transfer-dir ~/Dropbox/.commuter/
+```
 
-# Then every day:
-commuter push       # export latest → transfer dir
-commuter pull       # import from transfer dir
+Then, from each project you want to transfer:
+
+```bash
+cd ~/projects/my-app  &&  commuter push
+cd ~/projects/other   &&  commuter push
+```
+
+`push` exports the session for the **current directory**. Run it once per project you're taking with you.
+
+On the other machine, a single `pull` picks up everything:
+
+```bash
+commuter pull
+
+  ✓ Restored conversation (47 messages)    # my-app
+  ✓ Restored conversation (31 messages)    # other
+
+  Imported 2 session(s). To resume:
+    cd ~/projects/my-app  && claude --continue
+    cd ~/projects/other   && claude --continue
 ```
 
 ## How it works
