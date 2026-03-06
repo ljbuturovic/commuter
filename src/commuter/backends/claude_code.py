@@ -32,28 +32,27 @@ class ClaudeCodeBackend(Backend):
                 continue
 
             decoded_path = _decode_project_path(project_dir.name)
-            index = _read_sessions_index(project_dir)
 
+            # Build a lookup of index metadata keyed by session_id.
+            # The index is supplementary (provides summaries) but NOT authoritative —
+            # it can be stale. We always scan *.jsonl files directly.
+            index = _read_sessions_index(project_dir)
+            index_meta: dict[str, dict] = {}
             if index:
                 for entry in index.get("entries", []):
-                    jsonl_path = Path(entry["fullPath"])
-                    if not jsonl_path.exists():
-                        continue
-                    sessions.append(SessionInfo(
-                        session_id=entry["sessionId"],
-                        project_dir=entry.get("projectPath", decoded_path),
-                        last_activity=_parse_ts(entry.get("modified")),
-                        message_count=entry.get("messageCount", 0),
-                        first_prompt=entry.get("firstPrompt", ""),
-                        summary=entry.get("summary", ""),
-                        jsonl_path=jsonl_path,
-                    ))
-            else:
-                # No index — scan for .jsonl files directly
-                for jsonl_path in sorted(project_dir.glob("*.jsonl")):
-                    info = _read_session_metadata(jsonl_path, decoded_path)
-                    if info:
-                        sessions.append(info)
+                    index_meta[entry["sessionId"]] = entry
+
+            for jsonl_path in project_dir.glob("*.jsonl"):
+                info = _read_session_metadata(jsonl_path, decoded_path)
+                if not info:
+                    continue
+                # Enrich with index metadata if available
+                meta = index_meta.get(info.session_id)
+                if meta:
+                    info.summary = meta.get("summary", "")
+                    info.first_prompt = meta.get("firstPrompt", "") or info.first_prompt
+                    info.project_dir = meta.get("projectPath", "") or info.project_dir
+                sessions.append(info)
 
         sessions.sort(key=lambda s: s.last_activity or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
         return sessions
