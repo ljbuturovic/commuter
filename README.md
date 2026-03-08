@@ -12,6 +12,10 @@ pipx install commuter
 
 ---
 
+
+![commuter demo](commuter.gif)
+
+
 ## Why?
 
 Claude Code's [Remote Control](https://code.claude.com/docs/en/remote-control) lets you *view* a session from your phone — but the session runs on the original machine. If that machine sleeps, loses Wi-Fi, or you need local file access on a different computer, you're out of luck.
