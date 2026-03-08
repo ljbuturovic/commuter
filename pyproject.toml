@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "commuter"
-version = "0.1.4"
+version = "0.1.5"
 description = "Portable AI coding session transfer between machines"
 readme = "README.md"
 license = {text = "MIT"}
