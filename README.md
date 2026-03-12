@@ -17,7 +17,7 @@ $ commuter pull
 $ claude --continue
 ```
 
-You continue working in the same Claude Code conversation.
+Just like you get the latest code from remote repo, you get the latest Claude conversation from the other computer
 
 
 No cloud dependency. No VPN. No SSH tunnels. Just a JSON file in your Dropbox. Install with:
