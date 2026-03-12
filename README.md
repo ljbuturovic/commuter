@@ -1,4 +1,4 @@
-# 🚂 commuter
+# 🚂 commuter: push/pull for Claude sessions (like git push/pull)
 
 **Take your AI coding sessions to work and back.**
 
