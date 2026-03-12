@@ -2,9 +2,25 @@
 
 **Take your AI coding sessions to work and back.**
 
-Commuter transfers Claude Code sessions between machines. Start a session on your home desktop, export it, commute, import it on your office laptop — and pick up exactly where you left off, with full local file access.
+Commuter transfers Claude Code sessions between machines. Start a session on your home desktop, export it, commute, import it on your office laptop — and pick up exactly where you left off. Typical session:
 
-No cloud dependency. No VPN. No SSH tunnels. Just a JSON file in your Dropbox.
+```bash
+$ claude
+...
+$ git push origin main
+$ commuter push
+
+switch machine
+
+$ git pull origin main
+$ commuter pull
+$ claude --continue
+```
+
+You continue working in the same Claude Code conversation.
+
+
+No cloud dependency. No VPN. No SSH tunnels. Just a JSON file in your Dropbox. Install with:
 
 ```bash
 pipx install commuter
