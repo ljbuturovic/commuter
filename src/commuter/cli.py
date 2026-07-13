@@ -352,7 +352,13 @@ def cmd_push(verbose):
     cwd = str(Path.cwd())
     encoded_cwd = pathmap.encode_project_path(cwd)
     sessions = BACKEND.discover()
-    matching = [s for s in sessions if pathmap.encode_project_path(s.project_dir) == encoded_cwd]
+    # Associate a session with the current directory by where its transcript
+    # file physically lives (PROJECTS_DIR/<encoded-cwd>/), exactly how Claude
+    # Code maps sessions to projects — NOT by the `cwd` recorded inside the
+    # transcript. Those two diverge after a folder rename (e.g. krunic→cvic),
+    # which would make push select a different session than the one
+    # `claude --continue` resumes here.
+    matching = [s for s in sessions if s.jsonl_path.parent.name == encoded_cwd]
 
     if not matching:
         err_console.print(f"[red]✗ No session found for current directory: {cwd}[/red]")
@@ -369,12 +375,15 @@ def cmd_push(verbose):
     data = BACKEND.export_session(info.session_id)
     conversation = data["conversation"]
     lineage_hash = lineage_mod.compute(conversation)
-    git_snapshot = git_utils.get_snapshot(data["project_dir"])
+    # Tag the bundle with the current directory (where the session lives now),
+    # not the transcript's internal cwd, so it imports into the matching
+    # project dir on the other machine and `claude --continue` finds it there.
+    git_snapshot = git_utils.get_snapshot(cwd)
 
     bndl = bundle_mod.create(
         backend=BACKEND.name,
         session_id=data["session_id"],
-        project_dir=data["project_dir"],
+        project_dir=cwd,
         conversation=conversation,
         config=data["config"],
         git_snapshot=git_snapshot,
