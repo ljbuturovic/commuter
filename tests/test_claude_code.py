@@ -159,7 +159,10 @@ def test_import_then_discover(tmp_path, monkeypatch):
 def test_import_dry_run_creates_nothing(tmp_path, monkeypatch):
     import commuter.backends.claude_code as cc
     fake_projects = tmp_path / "projects"
+    fake_history = tmp_path / "history.jsonl"
     monkeypatch.setattr(cc, "PROJECTS_DIR", fake_projects)
+    monkeypatch.setattr(cc, "CLAUDE_DIR", tmp_path)
+    monkeypatch.setattr(cc, "HISTORY_FILE", fake_history)
 
     tmp_project = tmp_path / "myapp"
     tmp_project.mkdir()
@@ -169,6 +172,36 @@ def test_import_dry_run_creates_nothing(tmp_path, monkeypatch):
     backend.import_session(bndl, str(tmp_project), dry_run=True)
 
     assert not fake_projects.exists()
+    assert not fake_history.exists()
+
+
+def test_import_registers_history_for_continue(tmp_path, monkeypatch):
+    """Import must add a fresh history.jsonl entry so `claude --continue`
+    resumes the imported session (the frictionless push/pull cycle)."""
+    import json
+    import commuter.backends.claude_code as cc
+    fake_projects = tmp_path / "projects"
+    fake_history = tmp_path / "history.jsonl"
+    monkeypatch.setattr(cc, "PROJECTS_DIR", fake_projects)
+    monkeypatch.setattr(cc, "CLAUDE_DIR", tmp_path)
+    monkeypatch.setattr(cc, "HISTORY_FILE", fake_history)
+
+    tmp_project = tmp_path / "myapp"
+    tmp_project.mkdir()
+
+    backend = ClaudeCodeBackend()
+    bndl = _make_bundle(tmp_project)
+    session_id = backend.import_session(bndl, str(tmp_project))
+
+    assert fake_history.exists()
+    entries = [json.loads(line) for line in fake_history.read_text().splitlines() if line.strip()]
+    assert len(entries) == 1
+    entry = entries[0]
+    # The tuple claude --continue uses to pick the most-recent session:
+    assert entry["sessionId"] == session_id
+    assert entry["project"] == str(tmp_project)
+    assert entry["timestamp"] > 1_700_000_000_000  # epoch ms, freshly stamped
+    assert entry["display"]  # a non-empty label
 
 
 def test_export_import_roundtrip(tmp_path, monkeypatch):

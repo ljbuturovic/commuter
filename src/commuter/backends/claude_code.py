@@ -11,6 +11,7 @@ from ..pathmap import encode_project_path, translate
 
 CLAUDE_DIR = Path.home() / ".claude"
 PROJECTS_DIR = CLAUDE_DIR / "projects"
+HISTORY_FILE = CLAUDE_DIR / "history.jsonl"
 BACKEND_NAME = "claude-code"
 
 
@@ -121,6 +122,9 @@ class ClaudeCodeBackend(Backend):
         _write_jsonl(target_jsonl, conversation)
         target_jsonl.chmod(0o600)
 
+        # Make the imported session the one `claude --continue` resumes.
+        _append_history_entry(session_id, project_dir, conversation)
+
         _update_sessions_index(target_dir, session, project_dir, target_jsonl)
 
         # Restore project config files
@@ -225,6 +229,54 @@ def _read_session_metadata(jsonl_path: Path, project_dir: str) -> SessionInfo | 
         first_prompt=first_prompt,
         jsonl_path=jsonl_path,
     )
+
+
+def _last_user_prompt(conversation: list[dict]) -> str:
+    """Return the text of the last real user prompt in the conversation."""
+    for entry in reversed(conversation):
+        if entry.get("type") != "user":
+            continue
+        content = entry.get("message", {}).get("content", "")
+        if isinstance(content, str):
+            if content.strip():
+                return content
+        elif isinstance(content, list):
+            for block in content:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "text"
+                    and block.get("text", "").strip()
+                ):
+                    return block["text"]
+    return ""
+
+
+def _append_history_entry(
+    session_id: str, project_dir: str, conversation: list[dict]
+) -> None:
+    """Append an entry to ~/.claude/history.jsonl so `claude --continue` resumes
+    this session.
+
+    Claude Code picks the "most recent conversation" for a directory from this
+    machine-local log — each line records (project, sessionId, timestamp). The
+    log is never synced between machines, so a freshly imported session is
+    invisible to `--continue` until we register it here. We stamp it with the
+    current time so it wins as the most-recent session for the project, keeping
+    the `push; ssh; pull; claude --continue` cycle friction-free.
+    """
+    entry = {
+        "display": _last_user_prompt(conversation) or "commuter: imported session",
+        "pastedContents": {},
+        "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
+        "project": project_dir,
+        "sessionId": session_id,
+    }
+    try:
+        CLAUDE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(HISTORY_FILE, "a") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 
 def _read_jsonl(path: Path) -> list[dict]:
