@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -350,22 +351,12 @@ def cmd_push(verbose):
         sys.exit(1)
 
     cwd = str(Path.cwd())
-    encoded_cwd = pathmap.encode_project_path(cwd)
-    sessions = BACKEND.discover()
-    # Associate a session with the current directory by where its transcript
-    # file physically lives (PROJECTS_DIR/<encoded-cwd>/), exactly how Claude
-    # Code maps sessions to projects — NOT by the `cwd` recorded inside the
-    # transcript. Those two diverge after a folder rename (e.g. krunic→cvic),
-    # which would make push select a different session than the one
-    # `claude --continue` resumes here.
-    matching = [s for s in sessions if s.jsonl_path.parent.name == encoded_cwd]
+    info = _select_session_for_cwd(cwd)
 
-    if not matching:
+    if not info:
         err_console.print(f"[red]✗ No session found for current directory: {cwd}[/red]")
         err_console.print("  Run [bold]commuter list[/bold] to see all sessions.")
         sys.exit(1)
-
-    info = matching[0]  # most recent (discover() returns sorted by last_activity)
 
     pending_dir = transfer_dir / "pending"
     pending_dir.mkdir(parents=True, exist_ok=True)
@@ -459,8 +450,103 @@ def cmd_pull(dry_run, verbose):
 
 
 # ---------------------------------------------------------------------------
+# host — direct ssh/scp transfer, no shared transfer directory
+# ---------------------------------------------------------------------------
+
+@cli.command("host")
+@click.argument("hostname")
+@click.option("-v", "--verbose", is_flag=True)
+def cmd_host(hostname, verbose):
+    """Send the current directory's session directly to HOSTNAME over ssh/scp.
+
+    No shared transfer directory (Dropbox) is involved. The project must live at
+    the same absolute path on HOSTNAME, and must already have a Claude Code
+    session directory there. HOSTNAME is anything ssh understands (an alias from
+    ~/.ssh/config, user@host, etc.); passwordless ssh must already be set up.
+
+    Afterwards, on HOSTNAME:  cd <project> && claude --continue
+    """
+    cwd = str(Path.cwd())
+    info = _select_session_for_cwd(cwd)
+    if not info:
+        err_console.print(f"[red]✗ No session found for current directory: {cwd}[/red]")
+        err_console.print("  Run [bold]commuter list[/bold] to see all sessions.")
+        sys.exit(1)
+
+    # The transcript lives in ~/.claude/projects/<encoded-cwd>/ on both machines.
+    # "Same folder" means the same absolute path, so the encoded dir name matches.
+    # Remote paths are given relative to the remote home (~).
+    encoded_cwd = pathmap.encode_project_path(cwd)
+    remote_dir = f".claude/projects/{encoded_cwd}"
+    remote_path = f"{remote_dir}/{info.session_id}.jsonl"
+
+    if verbose:
+        console.print(f"  Session: [cyan]{info.session_id[:7]}[/cyan]")
+        console.print(f"  Local:   {info.jsonl_path}")
+        console.print(f"  Remote:  {hostname}:{remote_path}")
+
+    # Require the project's session directory to already exist on the remote —
+    # do NOT create it. If it's missing, the project isn't set up there.
+    check = subprocess.run(
+        ["ssh", hostname, "test", "-d", remote_dir],
+        stdin=subprocess.DEVNULL,
+    )
+    if check.returncode == 255:
+        err_console.print(f"[red]✗ Could not connect to {hostname} over ssh.[/red]")
+        err_console.print("  Check the hostname and that passwordless ssh is set up.")
+        sys.exit(1)
+    if check.returncode != 0:
+        err_console.print(
+            f"[red]✗ {hostname} has no session directory for this project:[/red]"
+        )
+        err_console.print(f"    {cwd}")
+        err_console.print(
+            f"  Open the project on {hostname} and run [bold]claude[/bold] there once"
+            " so its session directory exists, then retry."
+        )
+        sys.exit(1)
+
+    # Copy the transcript in. Do NOT preserve mtime (no scp -p): `claude
+    # --continue` picks the most recent session by transcript file mtime, so a
+    # fresh mtime is exactly what makes the imported session resume there.
+    copy = subprocess.run(
+        ["scp", "-q", str(info.jsonl_path), f"{hostname}:{remote_path}"],
+        stdin=subprocess.DEVNULL,
+    )
+    if copy.returncode != 0:
+        err_console.print(f"[red]✗ Failed to copy session to {hostname} (scp exit {copy.returncode}).[/red]")
+        sys.exit(1)
+
+    size_kb = info.jsonl_path.stat().st_size // 1024
+    console.print(
+        f"  [green]✓[/green] Sent session [cyan]{info.session_id[:7]}[/cyan]"
+        f" ({info.message_count} messages, {size_kb}KB) → {hostname}"
+    )
+    console.print(f"  Resume on {hostname}:")
+    console.print(f"    cd {cwd} && claude --continue")
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _select_session_for_cwd(cwd: str):
+    """Return the most recent session that physically lives in cwd's project dir.
+
+    Associates a session with the current directory by where its transcript file
+    physically lives (PROJECTS_DIR/<encoded-cwd>/), exactly how Claude Code maps
+    sessions to projects — NOT by the `cwd` recorded inside the transcript. Those
+    two diverge after a folder rename (e.g. krunic→cvic), which would otherwise
+    select a different session than the one `claude --continue` resumes here.
+    Returns None if no session matches. discover() is sorted most-recent-first.
+    """
+    encoded_cwd = pathmap.encode_project_path(cwd)
+    matching = [
+        s for s in BACKEND.discover()
+        if s.jsonl_path and s.jsonl_path.parent.name == encoded_cwd
+    ]
+    return matching[0] if matching else None
+
 
 def _shorten_path(path: str) -> str:
     home = str(Path.home())
