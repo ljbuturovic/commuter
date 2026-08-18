@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import subprocess
+import shlex
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -363,25 +365,7 @@ def cmd_push(verbose):
 
     output_path = pending_dir / f"{info.session_id}.json"
 
-    data = BACKEND.export_session(info.session_id)
-    conversation = data["conversation"]
-    lineage_hash = lineage_mod.compute(conversation)
-    # Tag the bundle with the current directory (where the session lives now),
-    # not the transcript's internal cwd, so it imports into the matching
-    # project dir on the other machine and `claude --continue` finds it there.
-    git_snapshot = git_utils.get_snapshot(cwd)
-
-    bndl = bundle_mod.create(
-        backend=BACKEND.name,
-        session_id=data["session_id"],
-        project_dir=cwd,
-        conversation=conversation,
-        config=data["config"],
-        git_snapshot=git_snapshot,
-        lineage_hash=lineage_hash,
-        backend_version=data.get("backend_version"),
-    )
-
+    bndl = _create_bundle_for_cwd(cwd, info)
     bundle_mod.write(bndl, output_path)
 
     msg_count = bndl["session"]["message_count"]
@@ -450,19 +434,23 @@ def cmd_pull(dry_run, verbose):
 
 
 # ---------------------------------------------------------------------------
-# host — direct ssh/scp transfer, no shared transfer directory
+# host — direct ssh/scp transport, no shared transfer directory
 # ---------------------------------------------------------------------------
 
 @cli.command("host")
 @click.argument("hostname")
+@click.option(
+    "--project-dir",
+    type=click.Path(),
+    help="Remote project directory override",
+)
 @click.option("-v", "--verbose", is_flag=True)
-def cmd_host(hostname, verbose):
+def cmd_host(hostname, project_dir, verbose):
     """Send the current directory's session directly to HOSTNAME over ssh/scp.
 
-    No shared transfer directory (Dropbox) is involved. The project must live at
-    the same absolute path on HOSTNAME, and must already have a Claude Code
-    session directory there. HOSTNAME is anything ssh understands (an alias from
-    ~/.ssh/config, user@host, etc.); passwordless ssh must already be set up.
+    No shared transfer directory (Dropbox) is involved. HOSTNAME is anything ssh
+    understands (an alias from ~/.ssh/config, user@host, etc.); passwordless ssh
+    must already be set up, and commuter must be installed on HOSTNAME.
 
     Afterwards, on HOSTNAME:  cd <project> && claude --continue
     """
@@ -473,57 +461,87 @@ def cmd_host(hostname, verbose):
         err_console.print("  Run [bold]commuter list[/bold] to see all sessions.")
         sys.exit(1)
 
-    # The transcript lives in ~/.claude/projects/<encoded-cwd>/ on both machines.
-    # "Same folder" means the same absolute path, so the encoded dir name matches.
-    # Remote paths are given relative to the remote home (~).
-    encoded_cwd = pathmap.encode_project_path(cwd)
-    remote_dir = f".claude/projects/{encoded_cwd}"
-    remote_path = f"{remote_dir}/{info.session_id}.jsonl"
+    bndl = _create_bundle_for_cwd(cwd, info)
+    remote_path = f"/tmp/commuter-{info.session_id}.json"
 
-    if verbose:
-        console.print(f"  Session: [cyan]{info.session_id[:7]}[/cyan]")
-        console.print(f"  Local:   {info.jsonl_path}")
-        console.print(f"  Remote:  {hostname}:{remote_path}")
+    with tempfile.NamedTemporaryFile(
+        suffix=".json",
+        prefix="commuter-",
+        delete=False,
+    ) as tmp:
+        local_bundle = Path(tmp.name)
 
-    # Require the project's session directory to already exist on the remote —
-    # do NOT create it. If it's missing, the project isn't set up there.
-    check = subprocess.run(
-        ["ssh", hostname, "test", "-d", remote_dir],
-        stdin=subprocess.DEVNULL,
-    )
-    if check.returncode == 255:
-        err_console.print(f"[red]✗ Could not connect to {hostname} over ssh.[/red]")
-        err_console.print("  Check the hostname and that passwordless ssh is set up.")
-        sys.exit(1)
-    if check.returncode != 0:
-        err_console.print(
-            f"[red]✗ {hostname} has no session directory for this project:[/red]"
+    size_kb = 0
+    try:
+        bundle_mod.write(bndl, local_bundle)
+        size_kb = local_bundle.stat().st_size // 1024
+
+        if verbose:
+            console.print(f"  Session: [cyan]{info.session_id[:7]}[/cyan]")
+            console.print(f"  Local:   {local_bundle}")
+            console.print(f"  Remote:  {hostname}:{remote_path}")
+
+        copy = subprocess.run(
+            ["scp", "-q", str(local_bundle), f"{hostname}:{remote_path}"],
+            stdin=subprocess.DEVNULL,
         )
-        err_console.print(f"    {cwd}")
-        err_console.print(
-            f"  Open the project on {hostname} and run [bold]claude[/bold] there once"
-            " so its session directory exists, then retry."
-        )
-        sys.exit(1)
+        if copy.returncode == 255:
+            err_console.print(f"[red]✗ Could not connect to {hostname} over ssh.[/red]")
+            err_console.print("  Check the hostname and that passwordless ssh is set up.")
+            sys.exit(1)
+        if copy.returncode != 0:
+            err_console.print(
+                f"[red]✗ Failed to copy bundle to {hostname} "
+                f"(scp exit {copy.returncode}).[/red]"
+            )
+            sys.exit(1)
 
-    # Copy the transcript in. Do NOT preserve mtime (no scp -p): `claude
-    # --continue` picks the most recent session by transcript file mtime, so a
-    # fresh mtime is exactly what makes the imported session resume there.
-    copy = subprocess.run(
-        ["scp", "-q", str(info.jsonl_path), f"{hostname}:{remote_path}"],
-        stdin=subprocess.DEVNULL,
-    )
-    if copy.returncode != 0:
-        err_console.print(f"[red]✗ Failed to copy session to {hostname} (scp exit {copy.returncode}).[/red]")
-        sys.exit(1)
+        remote_import_cmd = [
+            "commuter",
+            "import",
+            remote_path,
+            "--replace",
+            "--no-launch",
+        ]
+        if project_dir:
+            remote_import_cmd.extend(["--project-dir", project_dir])
+        if verbose:
+            remote_import_cmd.append("--verbose")
 
-    size_kb = info.jsonl_path.stat().st_size // 1024
+        remote_cmd = [
+            "ssh",
+            hostname,
+            f'PATH="$HOME/.local/bin:$PATH" {shlex.join(remote_import_cmd)}',
+        ]
+
+        imported = subprocess.run(remote_cmd, stdin=subprocess.DEVNULL)
+        if imported.returncode == 255:
+            err_console.print(f"[red]✗ Could not connect to {hostname} over ssh.[/red]")
+            err_console.print("  Check the hostname and that passwordless ssh is set up.")
+            sys.exit(1)
+        if imported.returncode != 0:
+            err_console.print(
+                f"[red]✗ Remote import failed on {hostname} (ssh exit {imported.returncode}).[/red]"
+            )
+            err_console.print(
+                "  Ensure commuter is installed on the remote host, visible to "
+                "non-interactive ssh, and the project path resolves there."
+            )
+            sys.exit(1)
+    finally:
+        local_bundle.unlink(missing_ok=True)
+
+    msg_count = bndl["session"]["message_count"]
     console.print(
         f"  [green]✓[/green] Sent session [cyan]{info.session_id[:7]}[/cyan]"
-        f" ({info.message_count} messages, {size_kb}KB) → {hostname}"
+        f" ({msg_count} messages, {size_kb}KB) → {hostname}"
     )
     console.print(f"  Resume on {hostname}:")
-    console.print(f"    cd {cwd} && claude --continue")
+    if project_dir:
+        console.print(f"    cd {project_dir} && claude --continue")
+    else:
+        console.print(f"    cd {cwd} && claude --continue")
+        console.print("    Use the mapped path shown above if the remote project path differs.")
 
 
 # ---------------------------------------------------------------------------
@@ -546,6 +564,27 @@ def _select_session_for_cwd(cwd: str):
         if s.jsonl_path and s.jsonl_path.parent.name == encoded_cwd
     ]
     return matching[0] if matching else None
+
+
+def _create_bundle_for_cwd(cwd: str, info) -> dict:
+    data = BACKEND.export_session(info.session_id)
+    conversation = data["conversation"]
+    lineage_hash = lineage_mod.compute(conversation)
+    # Tag the bundle with the current directory (where the session lives now),
+    # not the transcript's internal cwd, so it imports into the matching
+    # project dir on the other machine and `claude --continue` finds it there.
+    git_snapshot = git_utils.get_snapshot(cwd)
+
+    return bundle_mod.create(
+        backend=BACKEND.name,
+        session_id=data["session_id"],
+        project_dir=cwd,
+        conversation=conversation,
+        config=data["config"],
+        git_snapshot=git_snapshot,
+        lineage_hash=lineage_hash,
+        backend_version=data.get("backend_version"),
+    )
 
 
 def _shorten_path(path: str) -> str:
