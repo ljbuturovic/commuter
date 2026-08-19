@@ -112,7 +112,8 @@ If both machines use the same paths, skip this step.
 - Python 3.10+
 - [pipx](https://pipx.pypa.io/) (recommended) or pip
 - Claude Code installed on both machines
-- A shared filesystem between machines (Git, Dropbox, Syncthing, Google Drive, USB stick — anything that moves a file from A to B)
+- For `push` / `pull`: a shared filesystem between machines (Git, Dropbox, Syncthing, Google Drive, USB stick — anything that moves a file from A to B)
+- For `host`: passwordless SSH to the destination host, with commuter installed there too
 
 ## Commands
 
@@ -125,6 +126,7 @@ If both machines use the same paths, skip this step.
 | `commuter config set path-map "A" "B"` | Set up path translation between machines |
 | `commuter push` | Export current directory's session to transfer dir |
 | `commuter pull` | Import all pending sessions from transfer dir |
+| `commuter host HOSTNAME` | Send current directory's session directly to a host over SSH/SCP |
 
 ### Import flags
 
@@ -165,6 +167,23 @@ commuter pull
     cd ~/projects/other   && claude --continue
 ```
 
+### Host shortcut
+
+If you have SSH between machines, you can skip the shared transfer directory:
+
+```bash
+cd ~/projects/my-app
+commuter host office-laptop
+```
+
+`host` exports the current directory's session as the same bundle used by `push`, copies it to the destination host with `scp`, and runs `commuter import --replace --no-launch` there. The destination host must have commuter installed and visible to non-interactive SSH.
+
+If the project lives at a different path on the destination host, either configure path mapping on the destination or pass the remote path explicitly:
+
+```bash
+commuter host office-laptop --project-dir /Users/you/projects/my-app
+```
+
 ## How it works
 
 Commuter exports a session as a single JSON bundle containing:
@@ -176,6 +195,8 @@ Commuter exports a session as a single JSON bundle containing:
 - Environment metadata
 
 On import, it restores the session into Claude Code's local storage, translates paths if needed, validates the git state, and launches Claude Code with the restored conversation.
+
+Project MCP config is not currently transferred. If your workflow depends on `.mcp.json` or other MCP setup, keep those files in Git/Dropbox or configure them on both hosts.
 
 ### Session continuity
 
