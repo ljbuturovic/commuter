@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import copy
 import subprocess
 import shlex
 import sys
 import tempfile
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -78,45 +80,69 @@ def cmd_list():
 @click.argument("session_id", required=False)
 @click.option("-o", "--output", required=True, type=click.Path(), help="Output bundle file path")
 @click.option("--latest", is_flag=True, help="Export the most recently active session")
+@click.option(
+    "--from-cwd",
+    "from_cwd",
+    is_flag=True,
+    help="Export the session for the current directory (as `push`/`to` select it)",
+)
 @click.option("--compress", is_flag=True, help="Gzip compress the output bundle")
 @click.option("-v", "--verbose", is_flag=True)
-def cmd_export(session_id, output, latest, compress, verbose):
+def cmd_export(session_id, output, latest, from_cwd, compress, verbose):
     """Export a session to a portable bundle file."""
-    if not session_id and not latest:
-        # Default to latest
-        latest = True
-
-    if latest:
-        info = BACKEND.latest_session()
+    if from_cwd:
+        # Select the current directory's session the same way `push`/`to` do —
+        # by physical project dir. This is what `commuter from <host>` runs on
+        # the remote to pick the right session before copying it back.
+        if session_id or latest:
+            err_console.print("[red]✗ --from-cwd cannot be combined with SESSION_ID or --latest[/red]")
+            sys.exit(1)
+        cwd = str(Path.cwd())
+        info = _select_session_for_cwd(cwd)
         if not info:
-            err_console.print("[red]No sessions found.[/red]")
+            err_console.print(f"[red]✗ No session found for current directory: {cwd}[/red]")
             sys.exit(1)
         session_id = info.session_id
         if verbose:
-            console.print(f"  Using latest session: {session_id[:7]}")
+            console.print(f"  Using session for {cwd}: {session_id[:7]}")
+        bndl = _create_bundle_for_cwd(cwd, info)
+        git_snapshot = bndl.get("git_snapshot", {})
+    else:
+        if not session_id and not latest:
+            # Default to latest
+            latest = True
 
-    console.print(f"  Exporting session [cyan]{session_id[:7]}[/cyan]...")
+        if latest:
+            info = BACKEND.latest_session()
+            if not info:
+                err_console.print("[red]No sessions found.[/red]")
+                sys.exit(1)
+            session_id = info.session_id
+            if verbose:
+                console.print(f"  Using latest session: {session_id[:7]}")
 
-    try:
-        data = BACKEND.export_session(session_id)
-    except ValueError as e:
-        err_console.print(f"[red]✗ {e}[/red]")
-        sys.exit(1)
+        console.print(f"  Exporting session [cyan]{session_id[:7]}[/cyan]...")
 
-    conversation = data["conversation"]
-    lineage_hash = lineage_mod.compute(conversation)
-    git_snapshot = git_utils.get_snapshot(data["project_dir"])
+        try:
+            data = BACKEND.export_session(session_id)
+        except ValueError as e:
+            err_console.print(f"[red]✗ {e}[/red]")
+            sys.exit(1)
 
-    bndl = bundle_mod.create(
-        backend=BACKEND.name,
-        session_id=data["session_id"],
-        project_dir=data["project_dir"],
-        conversation=conversation,
-        config=data["config"],
-        git_snapshot=git_snapshot,
-        lineage_hash=lineage_hash,
-        backend_version=data.get("backend_version"),
-    )
+        conversation = data["conversation"]
+        lineage_hash = lineage_mod.compute(conversation)
+        git_snapshot = git_utils.get_snapshot(data["project_dir"])
+
+        bndl = bundle_mod.create(
+            backend=BACKEND.name,
+            session_id=data["session_id"],
+            project_dir=data["project_dir"],
+            conversation=conversation,
+            config=data["config"],
+            git_snapshot=git_snapshot,
+            lineage_hash=lineage_hash,
+            backend_version=data.get("backend_version"),
+        )
 
     output_path = Path(output)
     bundle_mod.write(bndl, output_path, compress=compress)
@@ -434,10 +460,10 @@ def cmd_pull(dry_run, verbose):
 
 
 # ---------------------------------------------------------------------------
-# host — direct ssh/scp transport, no shared transfer directory
+# to / from — direct ssh/scp transport, no shared transfer directory
 # ---------------------------------------------------------------------------
 
-@cli.command("host")
+@cli.command("to")
 @click.argument("hostname")
 @click.option(
     "--project-dir",
@@ -445,8 +471,8 @@ def cmd_pull(dry_run, verbose):
     help="Remote project directory override",
 )
 @click.option("-v", "--verbose", is_flag=True)
-def cmd_host(hostname, project_dir, verbose):
-    """Send the current directory's session directly to HOSTNAME over ssh/scp.
+def cmd_to(hostname, project_dir, verbose):
+    """Send the current directory's session TO HOSTNAME over ssh/scp.
 
     No shared transfer directory (Dropbox) is involved. HOSTNAME is anything ssh
     understands (an alias from ~/.ssh/config, user@host, etc.); passwordless ssh
@@ -542,6 +568,104 @@ def cmd_host(hostname, project_dir, verbose):
     else:
         console.print(f"    cd {cwd} && claude --continue")
         console.print("    Use the mapped path shown above if the remote project path differs.")
+
+
+# Backward-compatible hidden alias: `commuter host` == `commuter to`.
+_cmd_host = copy.copy(cmd_to)
+_cmd_host.name = "host"
+_cmd_host.hidden = True
+cli.add_command(_cmd_host)
+
+
+@cli.command("from")
+@click.argument("hostname")
+@click.option(
+    "--project-dir",
+    type=click.Path(),
+    help="Remote project directory (defaults to the current directory's path)",
+)
+@click.option("-v", "--verbose", is_flag=True)
+def cmd_from(hostname, project_dir, verbose):
+    """Pull the current project's session FROM HOSTNAME over ssh/scp.
+
+    The mirror of `commuter to`: it asks HOSTNAME to export the session for this
+    project, copies the bundle back, and imports it here so `claude --continue`
+    resumes it locally. HOSTNAME must have commuter installed and the project at
+    the same path (or pass --project-dir with the remote path). Run this from the
+    local project directory.
+
+    Afterwards, here:  claude --continue
+    """
+    cwd = str(Path.cwd())
+    remote_dir = project_dir or cwd
+    token = uuid.uuid4().hex[:12]
+    remote_bundle = f"/tmp/commuter-from-{token}.json"
+
+    if verbose:
+        console.print(f"  Remote:  {hostname}:{remote_dir}")
+
+    # 1. Ask the remote to export the session for the project directory. The
+    #    selection (most-recent session for that dir) runs THERE, so we cd into
+    #    the project on the remote and let `export --from-cwd` pick it.
+    remote_export = shlex.join(
+        ["commuter", "export", "--from-cwd", "-o", remote_bundle]
+        + (["--verbose"] if verbose else [])
+    )
+    remote_shell = (
+        'export PATH="$HOME/.local/bin:$PATH"; '
+        f"cd {shlex.quote(remote_dir)} && {remote_export}"
+    )
+    exported = subprocess.run(["ssh", hostname, remote_shell], stdin=subprocess.DEVNULL)
+    if exported.returncode == 255:
+        err_console.print(f"[red]✗ Could not connect to {hostname} over ssh.[/red]")
+        err_console.print("  Check the hostname and that passwordless ssh is set up.")
+        sys.exit(1)
+    if exported.returncode != 0:
+        err_console.print(
+            f"[red]✗ Remote export failed on {hostname} (ssh exit {exported.returncode}).[/red]"
+        )
+        err_console.print(
+            f"  Ensure commuter is installed on {hostname} (visible to non-interactive"
+            f" ssh) and that a session exists for the project at {remote_dir}."
+        )
+        sys.exit(1)
+
+    # 2. Copy the bundle back to a local temp file.
+    with tempfile.NamedTemporaryFile(suffix=".json", prefix="commuter-", delete=False) as tmp:
+        local_bundle = Path(tmp.name)
+    try:
+        copy_down = subprocess.run(
+            ["scp", "-q", f"{hostname}:{remote_bundle}", str(local_bundle)],
+            stdin=subprocess.DEVNULL,
+        )
+        # Best-effort cleanup of the remote temp bundle regardless of scp result.
+        subprocess.run(
+            ["ssh", hostname, f"rm -f {shlex.quote(remote_bundle)}"],
+            stdin=subprocess.DEVNULL,
+        )
+        if copy_down.returncode != 0:
+            err_console.print(
+                f"[red]✗ Failed to copy bundle from {hostname} (scp exit {copy_down.returncode}).[/red]"
+            )
+            sys.exit(1)
+
+        # 3. Import locally — reuses path-map, git, and continuity handling.
+        ctx = click.get_current_context()
+        ctx.invoke(
+            cmd_import,
+            bundle_file=str(local_bundle),
+            project_dir=None,
+            replace=True,
+            no_launch=True,
+            dry_run=False,
+            verbose=verbose,
+        )
+    finally:
+        local_bundle.unlink(missing_ok=True)
+
+    console.print(f"  [green]✓[/green] Pulled session from {hostname}")
+    console.print("  Resume here:")
+    console.print("    claude --continue")
 
 
 # ---------------------------------------------------------------------------
