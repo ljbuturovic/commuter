@@ -94,17 +94,12 @@ Round-trips are seamless. Commuter detects that the imported session is a contin
 
 ### Install / Development Workflow
 
-Your preferred release habit (cleaned up):
-
 ```bash
 cd ~/github/commuter
-uv build          # creates fresh dist/ with v0.2.0
+uv build
 uv publish
-pipx install --force commuter
+pipx upgrade commuter
 ```
-
-**Note**: `rm dist/*` is no longer needed — `uv build` overwrites cleanly.  
-Your habit of working in `~/Dropbox/ai/commuter` (while the repo lives at `~/github/commuter`) is fully supported — no hard-coded paths remain.
 
 For quick local testing without publishing:
 ```bash
