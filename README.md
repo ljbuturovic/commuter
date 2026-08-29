@@ -19,6 +19,8 @@ $ claude --continue
 
 Just like you get the latest code from remote repo, you get the latest Claude conversation from the other computer
 
+Both machines reachable over SSH? Skip the shared folder entirely and hop directly with `commuter to <host>` (send) or `commuter from <host>` (pull) — see **Direct SSH** below.
+
 
 No cloud dependency. No VPN. No SSH tunnels. Just a JSON file in your Dropbox. Install with:
 
@@ -113,7 +115,7 @@ If both machines use the same paths, skip this step.
 - [pipx](https://pipx.pypa.io/) (recommended) or pip
 - Claude Code installed on both machines
 - For `push` / `pull`: a shared filesystem between machines (Git, Dropbox, Syncthing, Google Drive, USB stick — anything that moves a file from A to B)
-- For `host`: passwordless SSH to the destination host, with commuter installed there too
+- For `to` / `from`: passwordless SSH between the machines, with commuter installed on both (0.1.12+ on both for `from`)
 
 ## Commands
 
@@ -122,11 +124,13 @@ If both machines use the same paths, skip this step.
 | `commuter list` | Show all Claude Code sessions on this machine |
 | `commuter export <id> -o file.json` | Export a session to a portable bundle |
 | `commuter export --latest -o file.json` | Export the most recent session |
+| `commuter export --from-cwd -o file.json` | Export the session for the current directory |
 | `commuter import file.json` | Import a session and launch Claude Code |
 | `commuter config set path-map "A" "B"` | Set up path translation between machines |
 | `commuter push` | Export current directory's session to transfer dir |
 | `commuter pull` | Import all pending sessions from transfer dir |
-| `commuter host HOSTNAME` | Send current directory's session directly to a host over SSH/SCP |
+| `commuter to HOSTNAME` | Send current directory's session directly to a host over SSH |
+| `commuter from HOSTNAME` | Pull the current project's session from a host over SSH |
 
 ### Import flags
 
@@ -167,22 +171,43 @@ commuter pull
     cd ~/projects/other   && claude --continue
 ```
 
-### Host shortcut
+### Direct SSH: `to` and `from`
 
-If you have SSH between machines, you can skip the shared transfer directory:
+If the machines can reach each other over SSH, skip the shared transfer directory
+and move the session directly. There are two directions — the argument is always
+*the other machine*:
 
 ```bash
+# Leaving this machine — SEND the current session to office-laptop
 cd ~/projects/my-app
-commuter host office-laptop
+commuter to office-laptop
+#   → on office-laptop:  cd ~/projects/my-app && claude --continue
+
+# Arriving at this machine — PULL the session from home-desktop
+cd ~/projects/my-app
+commuter from home-desktop
+#   → here:  claude --continue
 ```
 
-`host` exports the current directory's session as the same bundle used by `push`, copies it to the destination host with `scp`, and runs `commuter import --replace --no-launch` there. The destination host must have commuter installed and visible to non-interactive SSH.
+- **`to`** exports the current directory's session as the same bundle `push` builds,
+  copies it to the destination with `scp`, and runs `commuter import --replace
+  --no-launch` there.
+- **`from`** is the mirror: it runs `commuter export --from-cwd` on the remote (so the
+  remote picks the right session for the project), copies the bundle back, and imports
+  it locally.
 
-If the project lives at a different path on the destination host, either configure path mapping on the destination or pass the remote path explicitly:
+Both require commuter installed on the other machine and visible to non-interactive
+SSH. `from` runs `export --from-cwd` remotely, so the other machine needs **0.1.12+**.
+
+If the project lives at a different path on the other machine, either configure path
+mapping or pass the remote path explicitly:
 
 ```bash
-commuter host office-laptop --project-dir /Users/you/projects/my-app
+commuter to   office-laptop --project-dir /Users/you/projects/my-app
+commuter from home-desktop  --project-dir /home/you/projects/my-app
 ```
+
+> `commuter host HOSTNAME` still works as a hidden alias for `commuter to HOSTNAME`.
 
 ## How it works
 
@@ -190,7 +215,7 @@ Commuter exports a session as a single JSON bundle containing:
 
 - Full conversation history (messages, tool calls, results)
 - Project directory path
-- Project config (`.claude/settings.json`, `CLAUDE.md`)
+- Project config (`.claude/settings.json`, `CLAUDE.md`, `.claude/commands/`)
 - Git state snapshot (branch, commit, dirty files)
 - Environment metadata
 
