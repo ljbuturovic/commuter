@@ -127,7 +127,7 @@ def test_host_errors_when_scp_fails(tmp_path, monkeypatch):
 
     result = CliRunner().invoke(cli_mod.cli, ["host", "basel"])
     assert result.exit_code != 0
-    assert "Failed to copy bundle" in result.output
+    assert "Failed to copy bundle to" in result.output
     assert not any(c[0] == "ssh" for c in calls)
 
 

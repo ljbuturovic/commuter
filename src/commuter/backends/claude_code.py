@@ -174,6 +174,7 @@ def _read_session_metadata(jsonl_path: Path, project_dir: str) -> SessionInfo | 
     last_ts: datetime | None = None
     message_count = 0
     version: str | None = None
+    proj = project_dir  # default in case no version entry appears
 
     try:
         with open(jsonl_path) as f:
@@ -223,7 +224,7 @@ def _read_session_metadata(jsonl_path: Path, project_dir: str) -> SessionInfo | 
 
     return SessionInfo(
         session_id=session_id,
-        project_dir=proj if "proj" in dir() else project_dir,
+        project_dir=proj,
         last_activity=last_ts,
         message_count=message_count,
         first_prompt=first_prompt,

@@ -1,6 +1,6 @@
 # 🚂 commuter: push/pull for Claude Code (like git push/pull)
 
-**Take your AI coding sessions to work and back.**
+**Take your AI coding sessions to work and back.** (v0.2.0)
 
 Commuter transfers Claude Code sessions between machines. Start a session on your home desktop, export it, commute, import it on your office laptop — and pick up exactly where you left off. Typical session:
 
@@ -25,7 +25,7 @@ Both machines reachable over SSH? Skip the shared folder entirely and hop direct
 No cloud dependency. No VPN. No SSH tunnels. Just a JSON file in your Dropbox. Install with:
 
 ```bash
-pipx install commuter
+uv tool install --from . commuter
 ```
 
 ---
@@ -92,13 +92,26 @@ Round-trips are seamless. Commuter detects that the imported session is a contin
 
 ## Setup
 
-### Install
+### Install / Development Workflow
+
+Your preferred release habit (cleaned up):
 
 ```bash
-pipx install commuter
+cd ~/github/commuter
+uv build          # creates fresh dist/ with v0.2.0
+uv publish
+pipx install --force commuter
 ```
 
-Or if you prefer pip: `pip install commuter`
+**Note**: `rm dist/*` is no longer needed — `uv build` overwrites cleanly.  
+Your habit of working in `~/Dropbox/ai/commuter` (while the repo lives at `~/github/commuter`) is fully supported — no hard-coded paths remain.
+
+For quick local testing without publishing:
+```bash
+cd ~/github/commuter
+uv tool upgrade --from . commuter   # installs/upgrades from local source
+commuter --help
+```
 
 ### Path mapping (if your machines have different paths)
 
@@ -115,7 +128,7 @@ If both machines use the same paths, skip this step.
 - [pipx](https://pipx.pypa.io/) (recommended) or pip
 - Claude Code installed on both machines
 - For `push` / `pull`: a shared filesystem between machines (Git, Dropbox, Syncthing, Google Drive, USB stick — anything that moves a file from A to B)
-- For `to` / `from`: passwordless SSH between the machines, with commuter installed on both (0.1.12+ on both for `from`)
+- For `to` / `from`: passwordless SSH between the machines, with commuter installed on both (0.2.0+ on both for `from`)
 
 ## Commands
 
